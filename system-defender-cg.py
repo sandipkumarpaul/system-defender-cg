@@ -23,100 +23,103 @@ BOMB_Z_VEL = 250.0
 GRAVITY = 350.0
 ENEMY_RADIUS = 25
 BOSS_RADIUS = 35
+POWERUP_INTERVAL = 8.0
+MAX_POWERUPS = 3
+BOSS_HIT_COOLDOWN = 0.5  # Brief invulnerability after a boss rams the player
 
 # ==========================================
 # GLOBAL STATE DICTIONARY (Mob Programming Standard)
 # ==========================================
-game = {
-    "in_menu": True,
+def new_game_state():
+    """Returns a fresh copy of the full game state (used on launch and on restart)."""
+    return {
+        "in_menu": True,
 
-    # Player
-    "player_pos": [0.0, -400.0, 0.0],
-    "player_angle": 90.0,  # Facing positive Y
-    "turret_angle": 0.0,   # Relative to base
-    "player_speed": 180.0,
-    "player_hp": 100.0,
-    "max_hp": 100.0,
-    "bomb_count": 5,
+        # Player
+        "player_pos": [0.0, -400.0, 0.0],
+        "player_angle": 90.0,  # Facing positive Y
+        "turret_angle": 0.0,   # Relative to base
+        "player_speed": 180.0,
+        "player_hp": 100.0,
+        "max_hp": 100.0,
+        "bomb_count": 5,
 
-    # Combat Entities
-    "bullets": [],
-    "bombs": [],
-    "boss_bombs": [],
-    "particles": [],
-    "enemies": [],
+        # Combat Entities
+        "bullets": [],
+        "bombs": [],
+        "boss_bombs": [],
+        "particles": [],
+        "enemies": [],
 
-    # Progression
-    "score": 0,
-    "level": 1,
-    "spawn_timer": 0.0,
-    "spawn_interval": 3.0,
+        # Progression
+        "score": 0,
+        "level": 1,
+        "spawn_timer": 0.0,
+        "spawn_interval": 3.0,
 
-    # Environment
-    "firewalls": [],
-    "powerups": [],
+        # Environment
+        "firewalls": [],
+        "powerups": [],
+        "powerup_timer": POWERUP_INTERVAL,
 
-    # UI & Control Flags
-    "camera_mode": "perspective",
-    "game_over": False,
-    "hud_flash_timer": 0.0,
-    "hud_flash_state": True,
-    "lives": 3,
-    "invincible_timer": 0.0,
-    "heal_zone_cooldown": 0.0,
+        # UI & Control Flags
+        "camera_mode": "perspective",
+        "game_over": False,
+        "running": True,
+        "won": False,
+        "hud_flash_timer": 0.0,
+        "hud_flash_state": True,
+        "lives": 3,
+        "invincible_timer": 0.0,
+        "heal_zone_cooldown": 0.0,
 
-    # health_bar
-    "health_bar_flick_timer": 0.0,
-    "health_bar_flick": True,
+        # Health bar flicker
+        "health_bar_flick_timer": 0.0,
+        "health_bar_flick": True,
+        "boss_health_bar_flick_timer": 0.0,
+        "boss_health_bar_flick": True,
 
-    "boss_health_bar_flick_timer": 0.0,
-    "boss_health_bar_flick": True,
+        # Input States
+        "keys": {b"w": False, b"s": False, b"a": False, b"d": False,
+                 GLUT_KEY_LEFT: False, GLUT_KEY_RIGHT: False},
 
-    # Input States
-    "keys": {b"w": False, b"s": False, b"a": False, b"d": False,
-             GLUT_KEY_LEFT: False, GLUT_KEY_RIGHT: False},
+        # Buff / debuff zones
+        "zones": [],
+        "zone_spawn_timer": 0.0,
+        "zone_spawn_interval": 6.0,
+        "debuff_interval": 0,
 
-    "bossA":{
-        "alive": False,
-        "pos": [0, 0, 0],
-        "health": 100
-    },
+        # Sprint
+        "sprint_active": False,
+        "stamina": 100.0,
+        "max_stamina": 100.0,
+        "sprint_drain": 40.0,
+        "sprint_recover": 12.0,
 
+        # Boss A ("Pegasus")
+        "bossA": {
+            "alive": False,
+            "pos": [0, 0, 0],
+            "health": 100
+        },
 
+        # Boss B ("Chitti")
+        "bossB": {
+            "alive": False,
+            "pos": [0, 500, 0],
+            "health": 150,
+            "speed_bossB": 90,
+            "attack_timer": 0.0,
+            "spawn_timer": 5.0,
+            "orbit_angle": 0.0,
+            "orbit_speed": 120.0
+        },
+    }
 
-   "zones": [],
-   "zone_spawn_timer": 0.0,
-   "zone_spawn_interval": 6.0,
-   
-   "sprint_active": False,
-   "stamina": 100.0,
-   "max_stamina": 100.0,
-   "sprint_drain": 40.0,
-   "sprint_recover": 25.0,
-
-   "debuff_interval":0,
-
-
-  "bossB": {
-    "alive": False,
-    "pos": [0, 500, 0],
-    "health": 150,
-    "speed_bossB": 90,
-
-    "attack_timer": 0.0,
-    "spawn_timer": 5.0,
-
-    "orbit_angle": 0.0,
-    "orbit_speed": 120.0},
-
-    "running": True,
-    "won":False
-
-   
-
-}
+game = new_game_state()
 
 last_time = 0
+QUADRIC = None  # Shared GLU quadric, created once in main() and reused by every draw call
 
 # ==========================================
 # UTILITY FUNCTIONS
@@ -127,8 +130,85 @@ def dist2d(a, b):
 def circles_overlap(posA, radA, posB, radB):
     return dist2d(posA, posB) < (radA + radB)
 
+def can_act():
+    # True only while a round is actively being played (not paused, in the menu, or finished).
+    return game["running"] and not game["in_menu"] and not game["game_over"] and not game["won"]
+
+def damage_player(amount, cooldown=0.0):
+    # Applies damage unless the player is invincible; an optional cooldown grants brief i-frames.
+    if game["invincible_timer"] > 0:
+        return
+    game["player_hp"] = max(0.0, game["player_hp"] - amount)
+    game["invincible_timer"] = cooldown
+
+def barrel_tip():
+    # Returns the world-space muzzle position and the combined base + turret firing angle.
+    total_angle = math.radians(game["player_angle"] + game["turret_angle"])
+    tip_x = game["player_pos"][0] + BARREL_LENGTH * math.cos(total_angle)
+    tip_y = game["player_pos"][1] + BARREL_LENGTH * math.sin(total_angle)
+    return tip_x, tip_y, total_angle
+
+def fire_bullet():
+    # Fires a ricocheting bullet from the turret barrel.
+    tip_x, tip_y, angle = barrel_tip()
+    game["bullets"].append({
+        "pos": [tip_x, tip_y, 15.0],
+        "vel": [BULLET_SPEED * math.cos(angle), BULLET_SPEED * math.sin(angle), 0.0],
+        "bounces": 3
+    })
+
+def launch_bomb():
+    # Feature 3: Launches a parabolic bomb from the turret barrel (if any are left).
+    if game["bomb_count"] <= 0:
+        return
+    tip_x, tip_y, angle = barrel_tip()
+    game["bombs"].append({
+        "pos": [tip_x, tip_y, 15.0],
+        "vel": [BOMB_SPEED * math.cos(angle), BOMB_SPEED * math.sin(angle), BOMB_Z_VEL]
+    })
+    game["bomb_count"] -= 1
+
+def damage_enemy(e, damage, points):
+    # Damages a standard enemy (shielded minions have "life"), awarding points per hit.
+    e["life"] = e.get("life", 1) - damage
+    if e["life"] <= 0 and e in game["enemies"]:
+        game["enemies"].remove(e)
+    game["score"] += points
+
+def defeat_bossA():
+    # Pegasus bursts into four shielded minions when destroyed.
+    boss = game["bossA"]
+    boss["alive"] = False
+    boss["health"] = 0
+    bx, by, _ = boss["pos"]
+    for ox, oy in [(-50, 20), (50, 20), (-50, -20), (50, -20)]:
+        pos = [bx + ox, by + oy, 0]
+        game["enemies"].append({"pos": pos, "level": game["level"], "phase": 0.0, "color": (0, 1, 68/255), "life": 5})
+        spawn_particles(pos, 8, (1, 0.87, 0))
+
+def defeat_bossB():
+    # Destroying Chitti purges the system and wins the game.
+    boss = game["bossB"]
+    boss["alive"] = False
+    boss["health"] = 0
+    bx, by, _ = boss["pos"]
+    game["won"] = True
+    game["enemies"] = []
+    game["boss_bombs"] = []
+    spawn_particles([bx, by, 0], 40, (1.0, 0.5, 1.0))
+
+def spawn_powerup():
+    # Drops a random heal or bomb power-up somewhere inside the arena.
+    game["powerups"].append({
+        "type": random.choice(["heal", "bomb"]),
+        "pos": [random.uniform(-GRID_LENGTH + 60, GRID_LENGTH - 60),
+                random.uniform(-GRID_LENGTH + 60, GRID_LENGTH - 60), 0.0],
+        "rot": 0.0,
+        "phase": random.uniform(0, 2 * math.pi)
+    })
+
 def init_environment():
-    """Initializes static environment elements like firewalls and initial powerups."""
+    """Initializes the oscillating firewall obstacles."""
     # Feature 2: Dynamic "Firewall" Obstacles - Initialization
     for _ in range(20):
         game["firewalls"].append({
@@ -181,9 +261,9 @@ def draw_pause_menu():
     glEnd()
 
     # Menu Text
-    draw_text(WINDOW_WIDTH//2 - 65, WINDOW_HEIGHT//2 + 50, "GAME PAUSED", 1.0, 1.0, 1.0)
-    draw_text(WINDOW_WIDTH//2 - 40, WINDOW_HEIGHT//2 - 20, "RESUME", 0.0, 0.0, 0.0)
-    draw_text(WINDOW_WIDTH//2 - 110, WINDOW_HEIGHT//2 - 80, "(Press ESC or Click to resume)", 0.6, 0.6, 0.6)
+    draw_text_centered(WINDOW_WIDTH//2, WINDOW_HEIGHT//2 + 50, "GAME PAUSED", 1.0, 1.0, 1.0)
+    draw_text_centered(WINDOW_WIDTH//2, WINDOW_HEIGHT//2 - 20, "RESUME", 0.0, 0.0, 0.0)
+    draw_text_centered(WINDOW_WIDTH//2, WINDOW_HEIGHT//2 - 80, "(Press ESC or Click to resume)", 0.6, 0.6, 0.6)
 
     glPopMatrix()
     glMatrixMode(GL_PROJECTION)
@@ -207,8 +287,8 @@ def draw_menu():
     glLoadIdentity()
 
     # Title
-    draw_text(WINDOW_WIDTH//2 - 110, WINDOW_HEIGHT - 150, "SYSTEM DEFENDER", 0.0, 0.8, 0.8)
-    draw_text(WINDOW_WIDTH//2 - 40, WINDOW_HEIGHT - 180, "Group 08", 1.0, 1.0, 1.0)
+    draw_text_centered(WINDOW_WIDTH//2, WINDOW_HEIGHT - 150, "SYSTEM DEFENDER", 0.0, 0.8, 0.8)
+    draw_text_centered(WINDOW_WIDTH//2, WINDOW_HEIGHT - 180, "Purge the malware. Protect the motherboard.", 1.0, 1.0, 1.0)
 
     # Controls Manual
     draw_text(WINDOW_WIDTH//2 - 150, WINDOW_HEIGHT - 280, "--- CONTROLS MANUAL ---", 1.0, 1.0, 0.0)
@@ -220,6 +300,7 @@ def draw_menu():
     draw_text(WINDOW_WIDTH//2 - 150, WINDOW_HEIGHT - 470, "E : Toggle Sprint (Uses Stamina)", 1.0, 1.0, 1.0)
     draw_text(WINDOW_WIDTH//2 - 150, WINDOW_HEIGHT - 500, "V : Toggle Drone Camera", 1.0, 1.0, 1.0)
     draw_text(WINDOW_WIDTH//2 - 150, WINDOW_HEIGHT - 530, "ESC : Pause / Resume Game", 1.0, 1.0, 1.0)
+    draw_text(WINDOW_WIDTH//2 - 150, WINDOW_HEIGHT - 560, "R : Restart Game", 1.0, 1.0, 1.0)
 
     # Start Button Box
     glColor3f(0.0, 0.6, 0.2)
@@ -230,8 +311,8 @@ def draw_menu():
     glVertex2f(WINDOW_WIDTH//2 - 100, 200)
     glEnd()
 
-    draw_text(WINDOW_WIDTH//2 - 70, 168, "CLICK TO START", 1.0, 1.0, 1.0)
-    draw_text(WINDOW_WIDTH//2 - 75, 120, "(Or Press ENTER)", 0.6, 0.6, 0.6)
+    draw_text_centered(WINDOW_WIDTH//2, 168, "CLICK TO START", 1.0, 1.0, 1.0)
+    draw_text_centered(WINDOW_WIDTH//2, 120, "(Or Press ENTER)", 0.6, 0.6, 0.6)
 
     glPopMatrix()
     glMatrixMode(GL_PROJECTION)
@@ -261,6 +342,19 @@ def draw_text(x, y, text, r=1.0, g=1.0, b=1.0, font=None):
     glMatrixMode(GL_PROJECTION)
     glPopMatrix()
     glMatrixMode(GL_MODELVIEW)
+
+def text_width(text, font=None):
+    # Pixel width of a string rendered with a GLUT bitmap font.
+    if font is None: font = GLUT_BITMAP_HELVETICA_18
+    return sum(glutBitmapWidth(font, ord(ch)) for ch in text)
+
+def draw_text_centered(cx, y, text, r=1.0, g=1.0, b=1.0, font=None):
+    # Renders text horizontally centered on cx.
+    draw_text(cx - text_width(text, font) // 2, y, text, r, g, b, font)
+
+def pause_button_rect():
+    # Screen-space bounds (x_min, x_max, y_min, y_max) of the HUD pause button.
+    return WINDOW_WIDTH - 150, WINDOW_WIDTH - 20, 20, 60
 
 def draw_player():
     # Draws the player's tank using a hierarchical model.
@@ -326,7 +420,7 @@ def draw_player():
     glPushMatrix()
     glTranslatef(TANK_RADIUS * 0.38, 0, 0)  # Start at turret edge
     glRotatef(90, 0, 1, 0)
-    gluCylinder(gluNewQuadric(), 4, 3, BARREL_LENGTH, 8, 1)
+    gluCylinder(QUADRIC, 4, 3, BARREL_LENGTH, 8, 1)
     glPopMatrix()
 
     glPopMatrix()
@@ -349,7 +443,7 @@ def draw_projectiles():
     for b in game["bullets"]:
         glPushMatrix()
         glTranslatef(b["pos"][0], b["pos"][1], b["pos"][2])
-        gluSphere(gluNewQuadric(), BULLET_RADIUS, 8, 8)
+        gluSphere(QUADRIC, BULLET_RADIUS, 8, 8)
         glPopMatrix()
 
     # Feature 3: Parabolic Bombs
@@ -357,7 +451,7 @@ def draw_projectiles():
     for b in game["bombs"]:
         glPushMatrix()
         glTranslatef(b["pos"][0], b["pos"][1], b["pos"][2])
-        gluSphere(gluNewQuadric(), BOMB_RADIUS, 10, 10)
+        gluSphere(QUADRIC, BOMB_RADIUS, 10, 10)
         glPopMatrix()
 
     # Boss Bombs
@@ -365,7 +459,7 @@ def draw_projectiles():
     for b in game["boss_bombs"]:
         glPushMatrix()
         glTranslatef(b["pos"][0], b["pos"][1], b["pos"][2])
-        gluSphere(gluNewQuadric(), BOMB_RADIUS, 10, 10)
+        gluSphere(QUADRIC, BOMB_RADIUS, 10, 10)
         glPopMatrix()
 
 def draw_enemies():
@@ -388,13 +482,13 @@ def draw_enemies():
         except KeyError:
             pass
 
-        gluSphere(gluNewQuadric(), ENEMY_RADIUS, 14, 14)
+        gluSphere(QUADRIC, ENEMY_RADIUS, 14, 14)
 
         # Antenna shaft
         glColor3f(0.2, 0.2, 0.2)
         glPushMatrix()
         glTranslatef(0, 0, ENEMY_RADIUS * 0.7)
-        gluCylinder(gluNewQuadric(), 1.5, 0.5, ENEMY_RADIUS * 0.9, 6, 1)
+        gluCylinder(QUADRIC, 1.5, 0.5, ENEMY_RADIUS * 0.9, 6, 1)
         glPopMatrix()
 
         # Antenna tip (glowing)
@@ -404,7 +498,7 @@ def draw_enemies():
             glColor3f(1.0, 1.0, 0.0)
         glPushMatrix()
         glTranslatef(0, 0, ENEMY_RADIUS * 1.6)
-        gluSphere(gluNewQuadric(), 3.5, 6, 6)
+        gluSphere(QUADRIC, 3.5, 6, 6)
         glPopMatrix()
 
         # 3 legs each side
@@ -417,7 +511,7 @@ def draw_enemies():
                 glPushMatrix()
                 glRotatef(side * 90 + (i - 1) * 30, 0, 0, 1)
                 glRotatef(40, 0, 1, 0)
-                gluCylinder(gluNewQuadric(), 2.5, 1.0, ENEMY_RADIUS * 0.85, 5, 1)
+                gluCylinder(QUADRIC, 2.5, 1.0, ENEMY_RADIUS * 0.85, 5, 1)
                 glPopMatrix()
 
         glPopMatrix()
@@ -430,7 +524,7 @@ def draw_particles():
         r_ratio = max(0, p["life"] / p["max_life"])
         glColor3f(p["color"][0], p["color"][1], p["color"][2])
         glScalef(r_ratio, r_ratio, r_ratio)
-        gluSphere(gluNewQuadric(), 6, 5, 5)  # Low poly to save resources
+        gluSphere(QUADRIC, 6, 5, 5)  # Low poly to save resources
         glPopMatrix()
 
 def draw_powerups():
@@ -445,7 +539,7 @@ def draw_powerups():
             glutSolidCube(20)
         elif p["type"] == "bomb":
             glColor3f(1.0, 0.5, 0.0)
-            gluSphere(gluNewQuadric(), 12, 8, 8)
+            gluSphere(QUADRIC, 12, 8, 8)
 
         glPopMatrix()
 
@@ -463,22 +557,22 @@ def draw_bossA():
 
 
     glColor3f(0.25, 0.70, 0.35)
-    gluSphere(gluNewQuadric(), BOSS_RADIUS, 14, 14)
+    gluSphere(QUADRIC, BOSS_RADIUS, 14, 14)
 
     glColor3f(1, 1, 1)
     glPushMatrix()
     glScalef(0.6, 0.6, 0.5)
     glTranslatef(0, 0, 40)
-    gluSphere(gluNewQuadric(), 50, 14, 14)
+    gluSphere(QUADRIC, 50, 14, 14)
     glPopMatrix()
 
     glPushMatrix()
     glColor3f(0.2, 0.2, 0.2)
     glTranslatef(0, 0, 50)
-    gluCylinder(gluNewQuadric(), 1.5, 0.5, BOSS_RADIUS * 0.8, 6, 1)
+    gluCylinder(QUADRIC, 1.5, 0.5, BOSS_RADIUS * 0.8, 6, 1)
     glColor3f(1, 0, 0)
     glTranslatef(0, 0, 20)
-    gluSphere(gluNewQuadric(), 5, 6, 6)
+    gluSphere(QUADRIC, 5, 6, 6)
     glPopMatrix()
 
     glPopMatrix()
@@ -487,13 +581,8 @@ def draw_bossA():
 
 def draw_bossB():
     # Draws the "Chitti" boss model.
-
-    if game["bossB"]["health"] <= 0:
-        game["bossB"]["alive"] = False
     if not game["bossB"]["alive"]:
         return
-    
-       
 
     b = game["bossB"]
 
@@ -502,7 +591,7 @@ def draw_bossB():
 
     # Central sphere
     glColor3f(0.7, 0.1, 1.0)
-    gluSphere(gluNewQuadric(), 40, 16, 16)
+    gluSphere(QUADRIC, 40, 16, 16)
 
     glColor3f(0.2, 0.8, 1.0)
 
@@ -527,7 +616,7 @@ def draw_bossB():
         glRotatef(i * 120, 0, 0, 1)
         glTranslatef(0, 60, -20)
         glRotatef(90, 1, 0, 0)
-        gluCylinder(gluNewQuadric(), 4, 2, 40, 8, 1)
+        gluCylinder(QUADRIC, 4, 2, 40, 8, 1)
         glPopMatrix()
 
     glPopMatrix()  
@@ -586,6 +675,10 @@ def update_player(dt):
         game["player_pos"][0] += speed * dt * math.cos(rad)
         game["player_pos"][1] += speed * dt * math.sin(rad)
 
+    # Stamina slowly recovers while sprint is switched off.
+    if not game["sprint_active"]:
+        game["stamina"] = min(game["max_stamina"], game["stamina"] + game["sprint_recover"] * dt)
+
     # Clamp player position to stay within the arena bounds.
     game["player_pos"][0] = max(-GRID_LENGTH + TANK_RADIUS, min(GRID_LENGTH - TANK_RADIUS, game["player_pos"][0]))
     game["player_pos"][1] = max(-GRID_LENGTH + TANK_RADIUS, min(GRID_LENGTH - TANK_RADIUS, game["player_pos"][1]))
@@ -621,6 +714,13 @@ def update_environment(dt):
         fw["phase"] += fw["freq"] * dt
         # Oscillate Z between 0 and amplitude
         fw["pos"][2] = fw["amplitude"] * (math.sin(fw["phase"]) + 1) / 2.0
+
+    # Periodically drop a new power-up somewhere in the arena.
+    game["powerup_timer"] -= dt
+    if game["powerup_timer"] <= 0:
+        game["powerup_timer"] = POWERUP_INTERVAL
+        if len(game["powerups"]) < MAX_POWERUPS:
+            spawn_powerup()
 
     # Powerups Hover and Pickup Logic
     for p in game["powerups"][:]:
@@ -725,13 +825,7 @@ def update_projectiles(dt):
             # Damage Standard Enemies (Area of Effect).
             for e in game["enemies"][:]:
                 if dist2d(b["pos"], e["pos"]) < 120:
-                    if "life" not in e:
-                        game["enemies"].remove(e)
-                    else:
-                        e["life"] -= 2 # Bombs do double life damage to shielded enemies
-                        if e["life"] <= 0:
-                            game["enemies"].remove(e)
-                    game["score"] += 75
+                    damage_enemy(e, 2, 75)  # Bombs do double life damage to shielded enemies
                     spawn_particles(e["pos"], 5, (1.0, 0.0, 0.0))
 
             # Damage Boss A (Pegasus).
@@ -739,13 +833,7 @@ def update_projectiles(dt):
                 game["bossA"]["health"] -= 20  # Massive Damage!
                 spawn_particles(game["bossA"]["pos"], 15, (1.0, 1.0, 0.0))
                 if game["bossA"]["health"] <= 0:
-                    game["bossA"]["alive"] = False
-                    game["bossA"]["health"] = 0
-                    bx, by, bz = game["bossA"]["pos"]
-                    game["enemies"].append({"pos": [bx-50, by+20, 0], "level": game["level"], "phase": 0.0, "color":(0, 1, 68/255), "life":5})
-                    game["enemies"].append({"pos": [bx+50, by+20, 0], "level": game["level"], "phase": 0.0, "color":(0, 1, 68/255), "life":5})
-                    game["enemies"].append({"pos": [bx-50, by-20, 0], "level": game["level"], "phase": 0.0, "color":(0, 1, 68/255), "life":5})
-                    game["enemies"].append({"pos": [bx+50, by-20, 0], "level": game["level"], "phase": 0.0, "color":(0, 1, 68/255), "life":5})
+                    defeat_bossA()
 
             # Damage Boss B (Chitti).
             if game["bossB"]["alive"] and dist2d(b["pos"], game["bossB"]["pos"]) < 120:
@@ -753,14 +841,7 @@ def update_projectiles(dt):
                 bx, by, bz = game["bossB"]["pos"]
                 spawn_particles([bx, by, 0], 15, (0.8, 0.2, 1.0))
                 if game["bossB"]["health"] <= 0:
-                    game["bossB"]["alive"] = False
-                    game["bossB"]["health"] = 0
-                    game["won"] = True
-                    game["enemies"] = []
-                    spawn_particles([bx, by, 0], 40, (1.0, 0.5, 1.0))
-                    game["enemies"].append({"pos": [bx + 60, by, 0],"level": game["level"],"phase": 0.0,"color":(1, 1, 68/255),"life": 2})
-                    game["enemies"].append({"pos": [bx - 60, by, 0],"level": game["level"],"phase": 0.0,"color":(1, 1, 68/255),"life": 2})
-                    game["enemies"].append({"pos": [bx, by + 60, 0],"level": game["level"],"phase": 0.0,"color":(1, 1, 68/255),"life": 2})
+                    defeat_bossB()
 
             # Finally, remove the bomb after it explodes.
             if b in game["bombs"]: game["bombs"].remove(b)
@@ -780,10 +861,8 @@ def update_projectiles(dt):
             
             # Check Area of Effect against player
             if dist2d(b["pos"], game["player_pos"]) < 120:
-                if game["invincible_timer"] <= 0:
-                    game["player_hp"] -= 20
-                    if game["player_hp"] < 0: game["player_hp"] = 0
-            
+                damage_player(20)
+
             if b in game["boss_bombs"]: game["boss_bombs"].remove(b)
 
 def update_enemies(dt):
@@ -815,11 +894,7 @@ def update_enemies(dt):
 
         # Collision with the player.
         if dist < (TANK_RADIUS + ENEMY_RADIUS):
-            if game["invincible_timer"] <= 0:
-                if game["player_hp"] > 0:
-                    game["player_hp"] -= 15
-                    if game["player_hp"] < 0:
-                        game["player_hp"] = 0
+            damage_player(15)
             game["enemies"].remove(e)
             spawn_particles(e["pos"], 5, (1.0, 0.0, 0.0))
 
@@ -873,11 +948,7 @@ def update_bossA(dt):
     hitbox_radius = (ENEMY_RADIUS * 1.5) * current_scale
     
     if dist < (TANK_RADIUS + hitbox_radius):
-
-        if game["invincible_timer"] <= 0:
-            game["player_hp"] -= 20
-            if game["player_hp"] < 0:
-                game["player_hp"] = 0
+        damage_player(20, BOSS_HIT_COOLDOWN)
 
         # Push player away on collision.
         if dist > 0:
@@ -923,11 +994,7 @@ def update_bossB(dt):
 
     # Collision with player.
     if dist < (TANK_RADIUS + ENEMY_RADIUS * 1.5):
-
-        if game["invincible_timer"] <= 0:
-            game["player_hp"] -= 20
-            if game["player_hp"] < 0:
-                game["player_hp"] = 0
+        damage_player(20, BOSS_HIT_COOLDOWN)
 
         # Push player away on collision.
         if dist > 0:
@@ -983,13 +1050,7 @@ def check_combat_collisions():
         # Bullets vs Standard Enemies
         for e in game["enemies"][:]:
             if circles_overlap(b["pos"], BULLET_RADIUS, e["pos"], ENEMY_RADIUS):
-                if "life" not in e:
-                    game["enemies"].remove(e)
-                else:
-                    e["life"] -= 1
-                    if e["life"] <= 0:
-                        game["enemies"].remove(e)
-                game["score"] += 50
+                damage_enemy(e, 1, 50)
                 spawn_particles(e["pos"], 8, (1.0, 0.2, 0.2))
                 hit = True
                 break
@@ -1003,17 +1064,7 @@ def check_combat_collisions():
             if circles_overlap(b["pos"], BULLET_RADIUS, game["bossA"]["pos"], hitbox_radius):
                 game["bossA"]["health"] -= 2
                 if game["bossA"]["health"] <= 0:
-                    game["bossA"]["alive"] = False
-                    game["bossA"]["health"] = 0
-                    bx, by, bz = game["bossA"]["pos"]
-                    game["enemies"].append({"pos": [bx-50, by+20, 0], "level": game["level"], "phase": 0.0, "color":(0, 1, 68/255), "life":5})
-                    game["enemies"].append({"pos": [bx+50, by+20, 0], "level": game["level"], "phase": 0.0, "color":(0, 1, 68/255), "life":5})
-                    game["enemies"].append({"pos": [bx-50, by-20, 0], "level": game["level"], "phase": 0.0, "color":(0, 1, 68/255), "life":5})
-                    game["enemies"].append({"pos": [bx+50, by-20, 0], "level": game["level"], "phase": 0.0, "color":(0, 1, 68/255), "life":5})
-                    spawn_particles([bx-50, by+20, 0], 8, (1, 0.87, 0))
-                    spawn_particles([bx+50, by+20, 0], 8, (1, 0.87, 0))
-                    spawn_particles([bx-50, by-20, 0], 8, (1, 0.87, 0))
-                    spawn_particles([bx+50, by-20, 0], 8, (1, 0.87, 0))
+                    defeat_bossA()
                 hit = True
         
         # Bullets vs Boss B
@@ -1025,18 +1076,7 @@ def check_combat_collisions():
                 spawn_particles([bx, by, 0], 10, (0.8, 0.2, 1.0))
 
                 if game["bossB"]["health"] <= 0:
-                    game["bossB"]["alive"] = False
-                    game["bossB"]["health"] = 0
-                    game["won"] = True
-                    game["enemies"] = []
-
-                    # big explosion
-                    spawn_particles([bx, by, 0], 25, (1.0, 0.5, 1.0))
-
-                    # spawn 3 strong enemies after death
-                    game["enemies"].append({"pos": [bx + 60, by, 0],"level": game["level"],"phase": 0.0,"color":(1, 1, 68/255),"life": 2})
-                    game["enemies"].append({"pos": [bx - 60, by, 0],"level": game["level"],"phase": 0.0,"color":(1, 1, 68/255),"life": 2})
-                    game["enemies"].append({"pos": [bx, by + 60, 0],"level": game["level"],"phase": 0.0,"color":(1, 1, 68/255),"life": 2})
+                    defeat_bossB()
 
                 hit = True
 
@@ -1091,82 +1131,31 @@ def spawn_particles(pos, count, color):
         })
 
 def restart_game():
-    # Resets the entire game state to its initial values.
-    # Release any keys that were held down when the player died/reset
-    for k in game["keys"]:
-        game["keys"][k] = False
-
-    game.update({
-        "in_menu": False,
-
-        "player_pos": [0.0, -400.0, 0.0],
-        "player_angle": 90.0, "turret_angle": 0.0,
-        "player_speed": 180.0,  # Added to ensure debuffs clear on reset
-        "player_hp": 100.0, "lives": 3, "invincible_timer": 0.0,
-        "bomb_count": 5,
-        
-        "bullets": [], "bombs": [], "boss_bombs": [], "particles": [],
-        "enemies": [],
-        
-        "score": 0, "level": 1,
-        "spawn_timer": 0.0, "spawn_interval": 3.0,
-        
-        "firewalls": [], "powerups": [],
-        "camera_mode": "perspective", "game_over": False,
-        "hud_flash_timer": 0.0, "hud_flash_state": True,
-
-        "zones": [],
-        "zone_spawn_timer": 0.0,
-        "zone_spawn_interval": 6.0,
-        
-        "sprint_active": False,
-        "stamina": 100.0,
-        "max_stamina": 100.0,
-        "sprint_drain": 40.0,
-        "sprint_recover": 25.0,
-
-        "debuff_interval": 0,
-
-        "bossA":{
-            "alive": False,
-            "pos": [0, 0, 0],
-            "health": 100
-        },
-
-        "bossB": {
-            "alive": False,
-            "pos": [0, 500, 0],
-            "health": 150,
-            "speed_bossB": 90,
-            "attack_timer": 0.0,
-            "spawn_timer": 5.0,
-            "orbit_angle": 0.0,
-            "orbit_speed": 120.0
-        },
-
-        "running": True,
-        "won": False
-    })
+    # Resets the entire game state to its initial values (this also releases any held keys).
+    game.update(new_game_state())
+    game["in_menu"] = False
     init_environment()
 
 # Main Idle Loop
 def idle():
     # The main game loop, called continuously by GLUT.
-    if game["in_menu"]:
-        return  # Freeze the game engine while the menu is open
-
-    if not game["running"] or game['game_over']:
-        return
-
     global last_time
-    current_time = time.time()
-    dt = current_time - last_time
+    current_time = time.perf_counter()
+    # Frame-rate independent timing, capped to prevent physics glitches at low FPS.
+    # The clock always advances so resuming from the menu or pause never causes a time jump.
+    dt = min(current_time - last_time, 0.05)
     last_time = current_time
 
-    # Frame-rate independent timing cap to prevent physics glitches at low FPS.
-    dt = min(dt, 0.05)
+    if game["in_menu"] or not game["running"]:
+        return  # Freeze the game engine while the menu or pause screen is open
 
-    if game["player_hp"] <= 0 and not game["game_over"]:
+    if game["game_over"] or game["won"]:
+        # Round is over: freeze gameplay but let the final explosion finish animating.
+        update_particles(dt)
+        glutPostRedisplay()
+        return
+
+    if game["player_hp"] <= 0:
         # Handle player death and lives system.
         game["lives"] -= 1
         if game["lives"] <= 0:
@@ -1174,6 +1163,7 @@ def idle():
             game["bossA"]["alive"] = False
             game["bossB"]["alive"] = False
             game["enemies"] = []
+            game["boss_bombs"] = []
         else:
             game["player_hp"] = game["max_hp"]
             game["invincible_timer"] = 2.5
@@ -1200,7 +1190,7 @@ def idle():
     if game["zone_spawn_timer"] <= 0:
         game["zone_spawn_timer"] = game["zone_spawn_interval"]
         if len(game["zones"]) < 5:
-          spawn_zone()
+            spawn_zone()
     update_zones(dt)
     update_bossB(dt)
     update_projectiles(dt)
@@ -1224,6 +1214,7 @@ def idle():
 def keyboardListener(key, x, y):
     # Handles key press events.
     key = key.lower()
+    glutPostRedisplay()  # Menus and the pause screen only redraw on input
 
     # Menu Input
     if game["in_menu"]:
@@ -1240,41 +1231,27 @@ def keyboardListener(key, x, y):
     if key == b"r":
         restart_game()
 
-    # Feature 3: Parabolic Bomb Launch
-    if key == b" " and game["bomb_count"] > 0 and not game["game_over"]:
-        total_angle = math.radians(game["player_angle"] + game["turret_angle"])
-        tip_x = game["player_pos"][0] + BARREL_LENGTH * math.cos(total_angle)
-        tip_y = game["player_pos"][1] + BARREL_LENGTH * math.sin(total_angle)
-        game["bombs"].append({
-            "pos": [tip_x, tip_y, 15.0],
-            "vel": [BOMB_SPEED * math.cos(total_angle), BOMB_SPEED * math.sin(total_angle), BOMB_Z_VEL]
-        })
-        game["bomb_count"] -= 1
-
-    # ESC Key for Pause
-    if key == b'\x1b':  # \x1b is the byte-string for the ESC key
+    # ESC Key for Pause (only while a round is in progress)
+    if key == b'\x1b' and not game["game_over"] and not game["won"]:  # \x1b is the byte-string for the ESC key
         game["running"] = not game["running"]
-            
+
+    # Everything below is a gameplay action and is ignored while paused or after the round ends.
+    if not can_act():
+        return
+
+    # Feature 3: Parabolic Bomb Launch
+    if key == b" ":
+        launch_bomb()
+
     # Sprint Toggle mapped to 'e'
     if key == b'e':
         game["sprint_active"] = not game["sprint_active"]
         if game["sprint_active"]:
-            if game["stamina"] <= 0:
-                game["stamina"] = 0
-            else:
-                game["stamina"] -= 5
+            game["stamina"] = max(0, game["stamina"] - 5)
 
     # Mouseless Firing with the Enter/Return Key.
     if key == b'\r':  # \r is the byte-string for the Enter key
-        total_angle = math.radians(game["player_angle"] + game["turret_angle"])
-        tip_x = game["player_pos"][0] + BARREL_LENGTH * math.cos(total_angle)
-        tip_y = game["player_pos"][1] + BARREL_LENGTH * math.sin(total_angle)
-
-        game["bullets"].append({
-            "pos": [tip_x, tip_y, 15.0],
-            "vel": [BULLET_SPEED * math.cos(total_angle), BULLET_SPEED * math.sin(total_angle), 0.0],
-            "bounces": 3
-        })
+        fire_bullet()
 
 def keyboardUpListener(key, x, y):
     # Handles key release events.
@@ -1294,55 +1271,45 @@ def specialKeyUpListener(key, x, y):
 def mouseListener(button, state, x, y):
     # Handles mouse click events.
     converted_y = WINDOW_HEIGHT - y  # Match OpenGL coordinates
+    glutPostRedisplay()
 
     # Menu Input: Click to start.
     if game["in_menu"]:
         if button == GLUT_LEFT_BUTTON and state == GLUT_DOWN:
             # If they click anywhere in the bottom half of the screen, start the game
-            if converted_y <= 400: 
+            if converted_y <= WINDOW_HEIGHT // 2:
                 game["in_menu"] = False
         return
 
-    # --- NEW: CLICK ANYWHERE TO RESUME (FOOLPROOF FIX) ---
-    if not game["running"] and not game["game_over"] and not game["won"] and not game["in_menu"]:
+    # Click anywhere to resume while paused.
+    if not game["running"] and not game["game_over"] and not game["won"]:
         if button == GLUT_LEFT_BUTTON and state == GLUT_DOWN:
-            # Bypass Windows scaling entirely by accepting ANY click while paused
             game["running"] = True
-            glutPostRedisplay()
-        return  # IMPORTANT: If paused, ignore all other clicks!
+        return  # If paused, ignore all other clicks
 
-    # --- ORIGINAL CLICKABLE PAUSE BUTTON (Bottom Right) ---
-    if game["running"] and not game["game_over"] and not game["won"] and not game["in_menu"]:
-        if button == GLUT_LEFT_BUTTON and state == GLUT_DOWN:
-            if (WINDOW_WIDTH - 120 <= x <= WINDOW_WIDTH - 20) and (20 <= converted_y <= 60):
-                game["running"] = False
-                glutPostRedisplay()
-                return
+    if not can_act() or state != GLUT_DOWN:
+        return
 
-    if game["game_over"] or not game["running"]: return
+    # Clickable pause button (bottom right).
+    if button == GLUT_LEFT_BUTTON:
+        x_min, x_max, y_min, y_max = pause_button_rect()
+        if x_min <= x <= x_max and y_min <= converted_y <= y_max:
+            game["running"] = False
+            return
 
     # Left click: Fire Bullet
-    if button == GLUT_LEFT_BUTTON and state == GLUT_DOWN:
-        total_angle = math.radians(game["player_angle"] + game["turret_angle"])
-        tip_x = game["player_pos"][0] + BARREL_LENGTH * math.cos(total_angle)
-        tip_y = game["player_pos"][1] + BARREL_LENGTH * math.sin(total_angle)
-
-        game["bullets"].append({
-            "pos": [tip_x, tip_y, 15.0],
-            "vel": [BULLET_SPEED * math.cos(total_angle), BULLET_SPEED * math.sin(total_angle), 0.0],
-            "bounces": 3
-        })
+    if button == GLUT_LEFT_BUTTON:
+        fire_bullet()
 
     # Right click: Launch Bomb
-    if button == GLUT_RIGHT_BUTTON and state == GLUT_DOWN and game["bomb_count"] > 0:
-        total_angle = math.radians(game["player_angle"] + game["turret_angle"])
-        tip_x = game["player_pos"][0] + BARREL_LENGTH * math.cos(total_angle)
-        tip_y = game["player_pos"][1] + BARREL_LENGTH * math.sin(total_angle)
-        game["bombs"].append({
-            "pos": [tip_x, tip_y, 15.0],
-            "vel": [BOMB_SPEED * math.cos(total_angle), BOMB_SPEED * math.sin(total_angle), BOMB_Z_VEL]
-        })
-        game["bomb_count"] -= 1
+    if button == GLUT_RIGHT_BUTTON:
+        launch_bomb()
+
+def reshape(width, height):
+    # Keeps the viewport, HUD layout and mouse hit-testing in sync with the real window size.
+    global WINDOW_WIDTH, WINDOW_HEIGHT
+    WINDOW_WIDTH, WINDOW_HEIGHT = max(1, width), max(1, height)
+    glutPostRedisplay()
 
 # ==========================================
 # RENDERING
@@ -1428,7 +1395,16 @@ def drawHealthBar():
     factor = 3
     width = ratio * 100 * factor
 
-    # Background (red)
+    # Dark background so missing health stays visible
+    glColor3f(0.1, 0.1, 0.1)
+    glBegin(GL_QUADS)
+    glVertex2f(17, WINDOW_HEIGHT - 37)
+    glVertex2f(23 + 100 * factor, WINDOW_HEIGHT - 37)
+    glVertex2f(23 + 100 * factor, WINDOW_HEIGHT - 63)
+    glVertex2f(17, WINDOW_HEIGHT - 63)
+    glEnd()
+
+    # Foreground: green / yellow / flashing red depending on health
     if game["player_hp"] > 70:
         glColor3f(0, 1, 0)
     elif game["player_hp"] > 30:
@@ -1736,7 +1712,7 @@ def draw_sprint_bar():
     x = 20
     y = 30
 
-    draw_text(x, y + 3, "Stamina", 1, 1, 1)
+    draw_text(x, y + 30, "Stamina", 1, 1, 1)
 
     # 1. Draw the Dark Background FIRST
     glColor3f(0.1, 0.1, 0.1)
@@ -1775,19 +1751,14 @@ def draw_pause_button():
     glLoadIdentity()
 
     # Bounding box for Bottom-Right corner
-    box_x_min = WINDOW_WIDTH - 120
-    box_x_max = WINDOW_WIDTH - 20
-    box_y_min = 20
-    box_y_max = 60
+    box_x_min, box_x_max, box_y_min, box_y_max = pause_button_rect()
 
     if game["running"]:
         glColor3f(0.8, 0.6, 0.0)  # Yellow for PAUSE
         text = "PAUSE (ESC)"
-        text_offset = 12
     else:
         glColor3f(0.0, 0.8, 0.2)  # Green for RESUME
         text = "RESUME"
-        text_offset = 18
 
     # Draw Button Quad
     glBegin(GL_QUADS)
@@ -1803,7 +1774,7 @@ def draw_pause_button():
     glMatrixMode(GL_MODELVIEW)
 
     # Draw Text on top of the button (Black text)
-    draw_text(box_x_min + text_offset, box_y_min + 15, text, 0, 0, 0)
+    draw_text_centered((box_x_min + box_x_max) // 2, box_y_min + 15, text, 0, 0, 0)
 
 
 def showScreen():
@@ -1859,51 +1830,51 @@ def showScreen():
     draw_powerups()
 
     draw_zones()
-    draw_sprint_bar()
     if not game["game_over"]: draw_player()
     draw_enemies()
-
-
-
     draw_bossA()
     draw_bossB()
-
-
     draw_projectiles()
     draw_particles()
-    draw_lives()
 
-    # Draw all Heads-Up Display (HUD) elements.
-    draw_text(20, WINDOW_HEIGHT - 30, f"Player", 1, 1, 1)
+    # Draw all Heads-Up Display (HUD) elements on top of the 3D world.
+    # Depth testing is off so overlapping 2D layers (bar fill over bar background,
+    # button label over button) always draw in painter's order.
+    glDisable(GL_DEPTH_TEST)
+
+    draw_text(20, WINDOW_HEIGHT - 30, "Player", 1, 1, 1)
     drawHealthBar()
     drawBossAHealthBar()
     drawBossBHealthBar()
-
-    # --- UPDATED PAUSE BUTTON LOGIC ---
-    if not game["game_over"] and not game["won"] and not game["in_menu"]:
-        if game["running"]:
-            draw_pause_button()  # Show small corner button when playing
-        else:
-            draw_pause_menu()    # Show big center menu when paused
-    # ----------------------------------
+    draw_sprint_bar()
+    draw_lives()
 
     draw_text(20, WINDOW_HEIGHT - 90, f"SCORE: {game['score']}", 1, 1, 1)
     draw_text(20, WINDOW_HEIGHT - 120, f"THREAT LEVEL: {game['level']}", 1, 0.8, 0)
     draw_text(20, WINDOW_HEIGHT - 150, f"BOMBS: {game['bomb_count']} (Press SPACE)", 1, 0.5, 0.5)
 
     if game["camera_mode"] == "drone":
-        draw_text(WINDOW_WIDTH // 2 - 100, WINDOW_HEIGHT - 40, "[ TACTICAL DRONE VIEW ]", 0.2, 0.8, 0.8)
+        draw_text_centered(WINDOW_WIDTH // 2, WINDOW_HEIGHT - 40, "[ TACTICAL DRONE VIEW ]", 0.2, 0.8, 0.8)
 
     # Display game over or win messages.
     if game["game_over"]:
-        draw_text(WINDOW_WIDTH // 2 - 90, WINDOW_HEIGHT // 2 + 20, "SYSTEM FAILURE", 1, 0, 0)
-        draw_text(WINDOW_WIDTH // 2 - 90, WINDOW_HEIGHT // 2 - 20, f"Final Score: {game['score']}", 1, 1, 1)
-        draw_text(WINDOW_WIDTH // 2 - 90, WINDOW_HEIGHT // 2 - 55, "Press R to Restart", 1, 0.85, 0.0)
+        draw_text_centered(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2 + 20, "SYSTEM FAILURE", 1, 0, 0)
+        draw_text_centered(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2 - 20, f"Final Score: {game['score']}", 1, 1, 1)
+        draw_text_centered(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2 - 55, "Press R to Restart", 1, 0.85, 0.0)
 
     if game["won"]:
-        draw_text(WINDOW_WIDTH // 2 - 90, WINDOW_HEIGHT // 2 + 20, "SYSTEM SAFE", 0, 1, 0)
-        draw_text(WINDOW_WIDTH // 2 - 90, WINDOW_HEIGHT // 2 - 20, f"Final Score: {game['score']}", 1, 1, 1)
-        draw_text(WINDOW_WIDTH // 2 - 90, WINDOW_HEIGHT // 2 - 55, "Press R to Restart", 1, 0.85, 0.0)
+        draw_text_centered(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2 + 20, "SYSTEM SAFE", 0, 1, 0)
+        draw_text_centered(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2 - 20, f"Final Score: {game['score']}", 1, 1, 1)
+        draw_text_centered(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2 - 55, "Press R to Restart", 1, 0.85, 0.0)
+
+    # Pause controls are drawn last so the pause overlay sits above everything else.
+    if not game["game_over"] and not game["won"]:
+        if game["running"]:
+            draw_pause_button()  # Show small corner button when playing
+        else:
+            draw_pause_menu()    # Show big center menu when paused
+
+    glEnable(GL_DEPTH_TEST)
 
     # Swap the back buffer with the front buffer to display the rendered image.
     glutSwapBuffers()
@@ -1913,20 +1884,24 @@ def showScreen():
 # ==========================================
 def main():
     # Initializes GLUT, creates the window, and registers all callback functions.
-    global last_time
+    global last_time, QUADRIC
     glutInit()
     glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH)
     glutInitWindowSize(WINDOW_WIDTH, WINDOW_HEIGHT)
     glutInitWindowPosition(50, 50)
-    glutCreateWindow(b"System Defender - Group 08")
+    glutCreateWindow(b"System Defender")
 
     glEnable(GL_DEPTH_TEST)  # Enable depth testing for correct 3D rendering.
 
+    # A single quadric is reused for every sphere/cylinder; allocating one per draw call leaks memory.
+    QUADRIC = gluNewQuadric()
+
     init_environment()
-    last_time = time.time()
+    last_time = time.perf_counter()
 
     # Register GLUT callbacks.
     glutDisplayFunc(showScreen)
+    glutReshapeFunc(reshape)
     glutKeyboardFunc(keyboardListener)
     glutKeyboardUpFunc(keyboardUpListener)
     glutSpecialFunc(specialKeyListener)
